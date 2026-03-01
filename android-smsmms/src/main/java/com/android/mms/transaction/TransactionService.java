@@ -27,6 +27,8 @@ import android.database.Cursor;
 import android.database.sqlite.SqliteWrapper;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.NetworkRequest;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -139,6 +141,7 @@ public class TransactionService extends Service implements Observer {
     private final ArrayList<Transaction> mProcessing  = new ArrayList<Transaction>();
     private final ArrayList<Transaction> mPending  = new ArrayList<Transaction>();
     private ConnectivityManager mConnMgr;
+    private ConnectivityManager.NetworkCallback mNetworkCallback;
     private ConnectivityBroadcastReceiver mReceiver;
     private boolean mobileDataEnabled;
     private boolean lollipopReceiving = false;
@@ -519,15 +522,49 @@ public class TransactionService extends Service implements Observer {
             }
         }
 
-        int result = mConnMgr.startUsingNetworkFeature(ConnectivityManager.TYPE_MOBILE, "enableMMS");
+        // Try legacy API via reflection if present
+        try {
+            java.lang.reflect.Method m = ConnectivityManager.class.getMethod("startUsingNetworkFeature", int.class, String.class);
+            if (m != null) {
+                int result = (int) m.invoke(mConnMgr, ConnectivityManager.TYPE_MOBILE, "enableMMS");
+                Timber.v("beginMmsConnectivity (legacy): result=" + result);
+                switch (result) {
+                    case 0:
+                    case 1:
+                        acquireWakeLock();
+                        return result;
+                }
+            }
+        } catch (Exception e) {
+            // ignore and fall back to modern API
+        }
 
-        Timber.v("beginMmsConnectivity: result=" + result);
+        // Modern API: request an MMS-capable cellular network asynchronously
+        try {
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_MMS)
+                    .build();
 
-        switch (result) {
-            case 0:
-            case 1:
-                acquireWakeLock();
-                return result;
+            mNetworkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(android.net.Network network) {
+                    Timber.v("MMS network available");
+                    acquireWakeLock();
+                }
+
+                @Override
+                public void onLost(android.net.Network network) {
+                    Timber.v("MMS network lost");
+                }
+            };
+
+            mConnMgr.requestNetwork(request, mNetworkCallback);
+            Timber.v("beginMmsConnectivity: requested MMS network");
+            // Indicate that request started and transaction should be deferred
+            return 1;
+        } catch (Exception e) {
+            Timber.w(e, "Cannot request MMS network");
         }
 
         throw new IOException("Cannot establish MMS connectivity");
@@ -539,10 +576,28 @@ public class TransactionService extends Service implements Observer {
 
             // cancel timer for renewal of lease
             mServiceHandler.removeMessages(EVENT_CONTINUE_MMS_CONNECTIVITY);
-            if (mConnMgr != null && Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-                mConnMgr.stopUsingNetworkFeature(
-                        ConnectivityManager.TYPE_MOBILE,
-                        "enableMMS");
+            if (mConnMgr != null) {
+                // Try legacy API on older platforms
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                    try {
+                        java.lang.reflect.Method m = ConnectivityManager.class.getMethod("stopUsingNetworkFeature", int.class, String.class);
+                        if (m != null) {
+                            m.invoke(mConnMgr, ConnectivityManager.TYPE_MOBILE, "enableMMS");
+                        }
+                    } catch (Exception e) {
+                        // ignore
+                    }
+                } else {
+                    // Unregister any network callback we registered for MMS
+                    try {
+                        if (mNetworkCallback != null) {
+                            mConnMgr.unregisterNetworkCallback(mNetworkCallback);
+                            mNetworkCallback = null;
+                        }
+                    } catch (Exception e) {
+                        Timber.w(e, "Failed to unregister MMS network callback");
+                    }
+                }
             }
         } finally {
             releaseWakeLock();

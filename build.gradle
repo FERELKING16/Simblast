@@ -14,10 +14,11 @@ buildscript {
     ext.coroutines_version = '1.4.3'
     ext.dagger_version = "2.16"
     ext.espresso_version = '3.1.0-alpha3'
-    ext.exoplayer_version = "2.8.1"
+    ext.exoplayer_version = "2.18.6" // bumped from 2.8.1 to a modern release available in Google Maven
     ext.glide_version = "4.8.0"
     ext.junit_version = '4.12'
-    ext.kotlin_version = '1.8.22'
+    // use Kotlin 1.7.x so that kotlin-android-extensions plugin still functions; 1.8+ removed support
+    ext.kotlin_version = '1.7.20'
     ext.lifecycle_version = '2.1.0'
     ext.material_version = '1.0.0'
     ext.mockito_version = '2.18.3'
@@ -39,6 +40,8 @@ buildscript {
         maven { url 'https://maven.google.com' }
         google()
         mavenCentral()
+        // old dependencies like flexbox and realm‑adapters were published to jcenter; keep it around for now
+        jcenter()
     }
 
     dependencies {
@@ -54,6 +57,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        jcenter() // needed for legacy artifacts such as flexbox layout
         maven { url "https://jitpack.io" }
         maven { url 'https://maven.google.com' }
         maven {
